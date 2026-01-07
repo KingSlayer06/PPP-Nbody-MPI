@@ -31,6 +31,8 @@ function compute_forces_mpi!(bodies, comm, rank, nranks)
     clear_forces!(bodies)
 
     nbodies = length(bodies.pos)
+    # Initialize local forces to zero
+    #each rank will compute partial contributions
     local_forces = [Vec(0.0, 0.0, 0.0) for _ in 1:nbodies]
 
     # Only iterate over bodies assigned to this rank
@@ -61,14 +63,17 @@ function compute_forces_mpi!(bodies, comm, rank, nranks)
             dfy = coefficient * dy
             dfz = coefficient * dz
 
-            # Accumulate contribution to c (force on c from b)
-            force_c = local_forces[c]
-            local_forces[c] = Vec(force_c.x - dfx, force_c.y - dfy, force_c.z - dfz)
-            
-            # Accumulate contribution to b (force on b from c)
-            force_b_local = Vec(force_b_local.x + dfx, 
-                               force_b_local.y + dfy, 
-                               force_b_local.z + dfz)
+            # Accumulate contribution to c
+            fx = local_forces[c].x - dfx
+            fy = local_forces[c].y - dfy
+            fz = local_forces[c].z - dfz
+            local_forces[c] = Vec(fx, fy, fz)
+
+            # Accumulate contribution to b
+            fx = force_b_local.x + dfx
+            fy = force_b_local.y + dfy
+            fz = force_b_local.z + dfz
+            force_b_local = Vec(fx, fy, fz)
         end
 
         # Store local contribution for body b
@@ -85,14 +90,15 @@ function compute_forces_mpi!(bodies, comm, rank, nranks)
         local_force_array[3*(i-1) + 3] = local_forces[i].z
     end
     
-    # Allreduce to sum all partial forces
+    # Allreduce to sum all partial forces from all ranks
     MPI.Allreduce!(local_force_array, global_force_array, MPI.SUM, comm)
     
     # Copy results back to bodies structure
     for i in 1:nbodies
-        bodies.force[i] = Vec(global_force_array[3*(i-1) + 1],
-                             global_force_array[3*(i-1) + 2],
-                             global_force_array[3*(i-1) + 3])
+        fx = global_force_array[3*(i-1) + 1]
+        fy = global_force_array[3*(i-1) + 2]
+        fz = global_force_array[3*(i-1) + 3]
+        bodies.force[i] = Vec(fx, fy, fz)
     end
 end
 
@@ -209,14 +215,16 @@ function broadcast_bodies!(bodies, comm)
     
     # Unpack data on all ranks
     for i in 1:nbodies
-        bodies.pos[i] = Vec(pos_array[3*(i-1) + 1],
-                           pos_array[3*(i-1) + 2],
-                           pos_array[3*(i-1) + 3])
+        x = pos_array[3*(i-1) + 1]
+        y = pos_array[3*(i-1) + 2]
+        z = pos_array[3*(i-1) + 3]
+        bodies.pos[i] = Vec(x,y,z)
         
-        bodies.vel[i] = Vec(vel_array[3*(i-1) + 1],
-                           vel_array[3*(i-1) + 2],
-                           vel_array[3*(i-1) + 3])
-        
+        vx = vel_array[3*(i-1) + 1]
+        vy = vel_array[3*(i-1) + 2]
+        vz = vel_array[3*(i-1) + 3]
+        bodies.vel[i] = Vec(vx, vy, vz)
+
         bodies.mass[i] = mass_array[i]
     end
 end
