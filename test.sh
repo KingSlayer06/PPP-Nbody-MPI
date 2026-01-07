@@ -9,5 +9,9 @@ diff seq-1.txt par-1.txt | head -20
 echo -e "\nTesting with 100 bodies..."
 echo "Sequential:"
 julia -O3 nbody-seq-run.jl -s 500 10000 1
+echo -e "\nParallel (2 processes):"
+mpiexecjl -np 2 julia -O3 nbody-par-run.jl -s 500 10000 1
 echo -e "\nParallel (4 processes):"
 mpiexecjl -np 4 julia -O3 nbody-par-run.jl -s 500 10000 1
+echo -e "\nParallel (8 processes):"
+mpiexecjl -np 8 julia -O3 nbody-par-run.jl -s 500 10000 1
