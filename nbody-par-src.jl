@@ -33,13 +33,8 @@ function compute_forces_mpi!(bodies, comm, rank, nranks)
     nbodies = length(bodies.pos)
     local_forces = [Vec(0.0, 0.0, 0.0) for _ in 1:nbodies]
 
-    @inbounds for b in 1:nbodies
-        # Determine which rank should handle this body b
-        owner = mod(b - 1, nranks)
-        
-        if owner != rank
-            continue  # Skip if not assigned to this rank
-        end
+    # Only iterate over bodies assigned to this rank
+    @inbounds for b in (rank + 1):nranks:nbodies
         
         # Get data for body b
         mass_b = bodies.mass[b]
