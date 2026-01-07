@@ -229,7 +229,7 @@ function broadcast_bodies!(bodies, comm)
     end
 end
 
-function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false)
+function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, balance=false, gather=false)
     # Initialize MPI
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)

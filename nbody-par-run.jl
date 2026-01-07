@@ -46,7 +46,7 @@ function main()
 
     # RUN
     for _ in 1:nruns
-        perf_nbodies(nbodies,iterations,comm,verbose,silent)
+        perf_nbodies(nbodies,iterations,comm,verbose,silent,balance,gather)
     end
 
     # Finalize MPI
