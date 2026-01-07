@@ -44,7 +44,6 @@ function compute_forces_mpi!(bodies, comm, rank, nranks)
         # Get data for body b
         mass_b = bodies.mass[b]
         pos_b = bodies.pos[b]
-        force_b_local = Vec(0.0, 0.0, 0.0)
         force_b_local = local_forces[b]
 
         @inbounds for c in b + 1:nbodies
