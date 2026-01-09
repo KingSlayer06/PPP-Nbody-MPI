@@ -69,7 +69,7 @@ function run_sequential_benchmark(nbodies, iterations)
     return nothing
 end
 
-function benchmark_config(nbodies, iterations, nprocs, nruns=3)
+function benchmark_config(nbodies, iterations, nprocs, nruns=1)
     times = Float64[]
     
     @printf("  Running %d process(es)... ", nprocs)
@@ -86,11 +86,15 @@ function benchmark_config(nbodies, iterations, nprocs, nruns=3)
     end
     
     avg_time = mean(times)
-    @printf("%.3f secs (avg of %d runs)\n", avg_time, length(times))
+    if nruns > 1
+        @printf("%.3f secs (avg of %d runs)\n", avg_time, length(times))
+    else
+        @printf("%.3f secs\n", avg_time)
+    end
     return avg_time
 end
 
-function benchmark_sequential(nbodies, iterations, nruns=3)
+function benchmark_sequential(nbodies, iterations, nruns=1)
     times = Float64[]
     
     @printf("  Running sequential... ")
@@ -107,7 +111,11 @@ function benchmark_sequential(nbodies, iterations, nruns=3)
     end
     
     avg_time = mean(times)
-    @printf("%.3f secs (avg of %d runs)\n", avg_time, length(times))
+    if nruns > 1
+        @printf("%.3f secs (avg of %d runs)\n", avg_time, length(times))
+    else
+        @printf("%.3f secs\n", avg_time)
+    end
     return avg_time
 end
 
@@ -270,42 +278,51 @@ end
 
 function main()
     println("=" ^ 80)
-    println("N-body Simulation Benchmarking")
+    println("N-body Simulation Strong Scaling Benchmark")
     println("=" ^ 80)
     println()
     
-    # Benchmark configurations: (nbodies, iterations, nprocs_list)
-    benchmark_configs = [
-        # Small problem
-        (50, 1000, [1, 2, 4]),
-        # Medium problem
-        (100, 5000, [1, 2, 4, 8]),
-        # Large problem
-        (200, 5000, [1, 2, 4, 8]),
-        # Very large problem (if time permits)
-        (500, 2000, [1, 2, 4, 8]),
-    ]
+    # Strong scaling: fixed problem size, varying number of processes
+    # Problem size: 128 bodies, 1000000 iterations, 1 run
+    nbodies = 128
+    iterations = 1000000
+    runs = 1
+    
+    println("Strong Scaling Configuration:")
+    @printf("  Bodies: %d\n", nbodies)
+    @printf("  Iterations: %d\n", iterations)
+    @printf("  Runs: %d\n", runs)
+    println()
+    
+    # Test only 1, 2, 4, 8 nodes (1 process per node for simplicity)
+    # Total processes = number of nodes
+    nodes_to_test = [1, 2, 4, 8]
+    
+    println("Testing nodes: ", join(nodes_to_test, ", "))
+    println("  (1 process per node)")
+    println()
+    println("=" ^ 80)
+    println()
     
     results = []  # (nbodies, iterations, nprocs, time)
     
-    for (nbodies, iterations, nprocs_list) in benchmark_configs
-        println("Benchmarking: $nbodies bodies, $iterations iterations")
-        println("-" ^ 80)
+    # Run sequential first (for baseline)
+    println("Running sequential baseline...")
+    seq_time = benchmark_sequential(nbodies, iterations, runs)
+    if seq_time !== nothing
+        push!(results, (nbodies, iterations, 0, seq_time))
+    end
+    println()
+    
+    # Run parallel versions for each node count
+    for nodes in nodes_to_test
+        nprocs = nodes  # 1 process per node
+        @printf("Testing %d node(s) (%d process(es))...\n", nodes, nprocs)
         
-        # Run sequential first
-        seq_time = benchmark_sequential(nbodies, iterations)
-        if seq_time !== nothing
-            push!(results, (nbodies, iterations, 0, seq_time))
+        par_time = benchmark_config(nbodies, iterations, nprocs, runs)
+        if par_time !== nothing
+            push!(results, (nbodies, iterations, nprocs, par_time))
         end
-        
-        # Run parallel versions
-        for nprocs in nprocs_list
-            par_time = benchmark_config(nbodies, iterations, nprocs)
-            if par_time !== nothing
-                push!(results, (nbodies, iterations, nprocs, par_time))
-            end
-        end
-        
         println()
     end
     
@@ -318,7 +335,7 @@ function main()
     # Save results to CSV
     save_results_to_csv(results)
     
-    println("Benchmarking complete!")
+    println("Strong scaling benchmark complete!")
 end
 
 main()
