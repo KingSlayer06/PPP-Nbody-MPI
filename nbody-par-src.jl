@@ -27,16 +27,133 @@ function clear_forces!(bodies)
     end
 end
 
+function get_balanced_body_range(nbodies::Int, rank::Int, nranks::Int)
+    # Total number of force pairs
+    total_pairs = (nbodies * (nbodies - 1)) ÷ 2
+    
+    # Pairs per rank
+    pairs_per_rank = total_pairs / nranks
+    
+    # Find which bodies this rank should process
+    # Body b computes (nbodies - b) force pairs
+    
+    accumulated_pairs = 0
+    start_body = 0
+    end_body = 0
+    
+    target_start = rank * pairs_per_rank
+    target_end = (rank + 1) * pairs_per_rank
+    
+    for b in 1:nbodies-1
+        pairs_for_body = nbodies - b
+        
+        # Check if this body's pairs overlap with our target range
+        if start_body == 0 && accumulated_pairs + pairs_for_body > target_start
+            start_body = b
+        end
+        
+        if accumulated_pairs + pairs_for_body >= target_end
+            end_body = b
+            break
+        end
+        
+        accumulated_pairs += pairs_for_body
+    end
+    
+    if start_body == 0
+        start_body = 1
+    end
+    if end_body == 0 || rank == nranks - 1
+        end_body = nbodies - 1
+    end
+    
+    return start_body:end_body
+end
+
 function compute_forces_mpi!(bodies, comm, rank, nranks)
     clear_forces!(bodies)
 
     nbodies = length(bodies.pos)
-    # Initialize local forces to zero
-    #each rank will compute partial contributions
     local_forces = [Vec(0.0, 0.0, 0.0) for _ in 1:nbodies]
 
     # Only iterate over bodies assigned to this rank
     @inbounds for b in (rank + 1):nranks:nbodies
+        
+        # Get data for body b
+        mass_b = bodies.mass[b]
+        pos_b = bodies.pos[b]
+        force_b_local = local_forces[b]
+
+        @inbounds for c in b + 1:nbodies
+            # Get data for body c
+            pos_c = bodies.pos[c]
+            mass_c = bodies.mass[c]
+            
+            # Distance
+            dx = pos_c.x - pos_b.x
+            dy = pos_c.y - pos_b.y
+            dz = pos_c.z - pos_b.z
+            dist_sqr = dx^2 + dy^2 + dz^2
+            dist = sqrt(dist_sqr)
+            
+            # Force between b and c
+            # Assume there are no singularities, resulting in division by zero
+            # also, we use gravity constant 1 
+            coefficient = ((mass_b * mass_c) / (dist * dist_sqr))
+            dfx = coefficient * dx
+            dfy = coefficient * dy
+            dfz = coefficient * dz
+
+            # Accumulate contribution to c
+            fx = local_forces[c].x - dfx
+            fy = local_forces[c].y - dfy
+            fz = local_forces[c].z - dfz
+            local_forces[c] = Vec(fx, fy, fz)
+
+            # Accumulate contribution to b
+            fx = force_b_local.x + dfx
+            fy = force_b_local.y + dfy
+            fz = force_b_local.z + dfz
+            force_b_local = Vec(fx, fy, fz)
+        end
+
+        # Store local contribution for body b
+        local_forces[b] = force_b_local
+    end
+
+    # Convert to flat arrays for MPI operations
+    local_force_array = zeros(Float64, 3 * nbodies)
+    global_force_array = zeros(Float64, 3 * nbodies)
+    
+    for i in 1:nbodies
+        local_force_array[3*(i-1) + 1] = local_forces[i].x
+        local_force_array[3*(i-1) + 2] = local_forces[i].y
+        local_force_array[3*(i-1) + 3] = local_forces[i].z
+    end
+    
+    # Allreduce to sum all partial forces
+    MPI.Allreduce!(local_force_array, global_force_array, MPI.SUM, comm)
+    
+    # Copy results back to bodies structure
+    for i in 1:nbodies
+        fx = global_force_array[3*(i-1) + 1]
+        fy = global_force_array[3*(i-1) + 2]
+        fz = global_force_array[3*(i-1) + 3]
+        bodies.force[i] = Vec(fx, fy, fz)
+    end
+end
+
+function compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
+    clear_forces!(bodies)
+
+    nbodies = length(bodies.pos)
+    local_forces = [Vec(0.0, 0.0, 0.0) for _ in 1:nbodies]
+
+    # Get balanced range of bodies for this rank
+    body_range = get_balanced_body_range(nbodies, rank, nranks)
+
+    # Only iterate over bodies assigned to this rank
+    @inbounds for b in body_range
         
         # Get data for body b
         mass_b = bodies.mass[b]
@@ -257,7 +374,12 @@ function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, ba
             print_bodies(bodies, i)
         end
         
-        compute_forces_mpi!(bodies, comm, rank, nranks)
+        if balance
+            compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
+        else
+            compute_forces_mpi!(bodies, comm, rank, nranks)
+        end
+
         compute_positions!(bodies, dt)
         compute_velocities!(bodies, dt)
     end
