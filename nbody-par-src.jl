@@ -369,26 +369,25 @@ function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, ba
     t1 = time()
     
     dt = 0.01
-    for i in 1:iterations
-        if verbose && rank == 0
-            print_bodies(bodies, i)
+    secs = @elapsed begin
+        for i in 1:iterations
+            if verbose && rank == 0
+                print_bodies(bodies, i)
+            end
+            
+            if balance
+                compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
+            else
+                compute_forces_mpi!(bodies, comm, rank, nranks)
+            end
+    
+            compute_positions!(bodies, dt)
+            compute_velocities!(bodies, dt)
         end
         
-        if balance
-            compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
-        else
-            compute_forces_mpi!(bodies, comm, rank, nranks)
-        end
-
-        compute_positions!(bodies, dt)
-        compute_velocities!(bodies, dt)
+        # Synchronize after computation
+        MPI.Barrier(comm)
     end
-    
-    # Synchronize after computation
-    MPI.Barrier(comm)
-    
-    t2 = time()
-    secs = t2 - t1
     
     # Only rank 0 prints results
     if rank == 0

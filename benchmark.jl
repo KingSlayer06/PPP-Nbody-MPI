@@ -284,8 +284,8 @@ function main()
     
     # Strong scaling: fixed problem size, varying number of processes
     # Problem size: 128 bodies, 1000000 iterations, 1 run
-    nbodies = 128
-    iterations = 1000000
+    nbodies = 1024
+    iterations = 75000
     runs = 1
     
     println("Strong Scaling Configuration:")

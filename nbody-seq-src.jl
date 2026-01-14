@@ -167,21 +167,18 @@ function perf_nbodies(nbodies, iterations, verbose=false, silent=false)
     bodies = alloc_bodies(nbodies)
     init_bodies!(bodies)
 
-    # don't include initialization time
-    t1 = time()
-
     dt = 0.01
-    for i in 1:iterations
-        if verbose
-            print_bodies(bodies, i)
+    secs = @elapsed begin
+        for i in 1:iterations
+            if verbose
+                print_bodies(bodies, i)
+            end
+            compute_forces!(bodies)
+            compute_positions!(bodies, dt)
+            compute_velocities!(bodies, dt)
         end
-        compute_forces!(bodies)
-        compute_positions!(bodies, dt)
-        compute_velocities!(bodies, dt)
     end
-
-    t2 = time()
-    secs = t2 - t1
+    
     @printf("nbody took %.3f secs\n", secs)
 
     if ! silent

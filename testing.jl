@@ -6,6 +6,7 @@
 #   julia testing.jl
 #   or
 #   ./testing.jl
+# run 'export PATH="$HOME/.julia/bin:$PATH"' if mpiexecjl is not found
 
 using Printf
 
@@ -32,7 +33,7 @@ function run_parallel(nbodies, iterations, nprocs)
     # Note: Don't use -s flag, we need body data for comparison
     
     # Try mpiexecjl first
-    mpiexecjl_cmd = `mpiexecjl -np $nprocs julia -O3 nbody-par-run.jl $nbodies $iterations 1`
+    mpiexecjl_cmd = `mpiexecjl -np $nprocs julia -O3 nbody-par-run.jl -balance $nbodies $iterations 1`
     success = false
     try
         run(pipeline(mpiexecjl_cmd, stdout=output_file, stderr=devnull))
