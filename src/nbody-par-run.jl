@@ -27,7 +27,9 @@ function main()
         elseif ARGS[arg] == "-gather"
             gather = true
         else
-            println("unknown option: ", ARGS[arg])
+            if rank == 0
+                println("unknown option: ", ARGS[arg])
+            end
             MPI.Finalize()
             exit(1)
         end

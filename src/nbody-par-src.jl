@@ -219,6 +219,100 @@ function compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
     end
 end
 
+function compute_forces_mpi_gather!(bodies, comm, rank, nranks)
+    clear_forces!(bodies)
+
+    nbodies = length(bodies.pos)
+    local_forces = [Vec(0.0, 0.0, 0.0) for _ in 1:nbodies]
+
+    # Only iterate over bodies assigned to this rank
+    @inbounds for b in (rank + 1):nranks:nbodies
+        
+        # Get data for body b
+        mass_b = bodies.mass[b]
+        pos_b = bodies.pos[b]
+        force_b_local = local_forces[b]
+
+        @inbounds for c in b + 1:nbodies
+            # Get data for body c
+            pos_c = bodies.pos[c]
+            mass_c = bodies.mass[c]
+            
+            # Distance
+            dx = pos_c.x - pos_b.x
+            dy = pos_c.y - pos_b.y
+            dz = pos_c.z - pos_b.z
+            dist_sqr = dx^2 + dy^2 + dz^2
+            dist = sqrt(dist_sqr)
+            
+            # Force between b and c
+            # Assume there are no singularities, resulting in division by zero
+            # also, we use gravity constant 1 
+            coefficient = ((mass_b * mass_c) / (dist * dist_sqr))
+            dfx = coefficient * dx
+            dfy = coefficient * dy
+            dfz = coefficient * dz
+
+            # Accumulate contribution to c
+            fx = local_forces[c].x - dfx
+            fy = local_forces[c].y - dfy
+            fz = local_forces[c].z - dfz
+            local_forces[c] = Vec(fx, fy, fz)
+
+            # Accumulate contribution to b
+            fx = force_b_local.x + dfx
+            fy = force_b_local.y + dfy
+            fz = force_b_local.z + dfz
+            force_b_local = Vec(fx, fy, fz)
+        end
+
+        # Store local contribution for body b
+        local_forces[b] = force_b_local
+    end
+
+    # Convert to flat arrays for MPI operations
+    local_force_array = zeros(Float64, 3 * nbodies)
+    
+    for i in 1:nbodies
+        local_force_array[3*(i-1) + 1] = local_forces[i].x
+        local_force_array[3*(i-1) + 2] = local_forces[i].y
+        local_force_array[3*(i-1) + 3] = local_forces[i].z
+    end
+    
+    # Gather all partial force arrays at rank 0
+    if rank == 0
+        gathered_forces = zeros(Float64, 3 * nbodies * nranks)
+        MPI.Gather!(local_force_array, gathered_forces, 0, comm)
+    else
+        gathered_forces = nothing
+        MPI.Gather!(local_force_array, nothing, 0, comm)
+    end
+    
+    # Rank 0 sums all gathered partial forces
+    global_force_array = zeros(Float64, 3 * nbodies)
+    if rank == 0
+        for r in 0:nranks-1
+            offset = r * 3 * nbodies
+            for i in 1:nbodies
+                global_force_array[3*(i-1) + 1] += gathered_forces[offset + 3*(i-1) + 1]
+                global_force_array[3*(i-1) + 2] += gathered_forces[offset + 3*(i-1) + 2]
+                global_force_array[3*(i-1) + 3] += gathered_forces[offset + 3*(i-1) + 3]
+            end
+        end
+    end
+    
+    # Broadcast final forces to all ranks
+    MPI.Bcast!(global_force_array, 0, comm)
+    
+    # Copy results back to bodies structure
+    for i in 1:nbodies
+        fx = global_force_array[3*(i-1) + 1]
+        fy = global_force_array[3*(i-1) + 2]
+        fz = global_force_array[3*(i-1) + 3]
+        bodies.force[i] = Vec(fx, fy, fz)
+    end
+end
+
 function compute_positions!(bodies, dt)
     @inbounds for b in 1:length(bodies.pos)
         pos_b = bodies.pos[b]
@@ -300,15 +394,13 @@ function init_bodies!(bodies)
     end
 end
 
-function broadcast_bodies!(bodies, comm)
+function broadcast_bodies!(bodies, comm, rank)
     nbodies = length(bodies.pos)
     
     # Create flat arrays for broadcasting
     pos_array = zeros(Float64, 3 * nbodies)
     vel_array = zeros(Float64, 3 * nbodies)
     mass_array = zeros(Float64, nbodies)
-    
-    rank = MPI.Comm_rank(comm)
     
     # Pack data on root
     if rank == 0
@@ -350,7 +442,7 @@ function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, ba
     # Initialize MPI
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
-    
+
     # Allocate bodies on all ranks
     bodies = alloc_bodies(nbodies)
     
@@ -360,13 +452,10 @@ function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, ba
     end
     
     # Broadcast initial state to all ranks
-    broadcast_bodies!(bodies, comm)
+    broadcast_bodies!(bodies, comm, rank)
     
     # Synchronize before timing
     MPI.Barrier(comm)
-    
-    # Don't include initialization time
-    t1 = time()
     
     dt = 0.01
     secs = @elapsed begin
@@ -377,6 +466,8 @@ function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, ba
             
             if balance
                 compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
+            elseif gather
+                compute_forces_mpi_gather!(bodies, comm, rank, nranks)
             else
                 compute_forces_mpi!(bodies, comm, rank, nranks)
             end
