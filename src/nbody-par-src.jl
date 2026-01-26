@@ -219,97 +219,107 @@ function compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
     end
 end
 
-function compute_forces_mpi_gather!(bodies, comm, rank, nranks)
-    clear_forces!(bodies)
-
+function compute_positions_gather!(bodies, dt, comm, rank, nranks)
     nbodies = length(bodies.pos)
-    local_forces = [Vec(0.0, 0.0, 0.0) for _ in 1:nbodies]
-
-    # Only iterate over bodies assigned to this rank
+    
+    # Each rank computes positions for its subset (cyclic distribution)
+    local_count = (nbodies - rank + nranks - 1) ÷ nranks  # Number of bodies this rank handles
+    sendbuf = zeros(Float64, local_count * 3)
+    
+    # Compute and pack local positions
+    idx = 1
     @inbounds for b in (rank + 1):nranks:nbodies
-        
-        # Get data for body b
-        mass_b = bodies.mass[b]
         pos_b = bodies.pos[b]
-        force_b_local = local_forces[b]
-
-        @inbounds for c in b + 1:nbodies
-            # Get data for body c
-            pos_c = bodies.pos[c]
-            mass_c = bodies.mass[c]
-            
-            # Distance
-            dx = pos_c.x - pos_b.x
-            dy = pos_c.y - pos_b.y
-            dz = pos_c.z - pos_b.z
-            dist_sqr = dx^2 + dy^2 + dz^2
-            dist = sqrt(dist_sqr)
-            
-            # Force between b and c
-            # Assume there are no singularities, resulting in division by zero
-            # also, we use gravity constant 1 
-            coefficient = ((mass_b * mass_c) / (dist * dist_sqr))
-            dfx = coefficient * dx
-            dfy = coefficient * dy
-            dfz = coefficient * dz
-
-            # Accumulate contribution to c
-            fx = local_forces[c].x - dfx
-            fy = local_forces[c].y - dfy
-            fz = local_forces[c].z - dfz
-            local_forces[c] = Vec(fx, fy, fz)
-
-            # Accumulate contribution to b
-            fx = force_b_local.x + dfx
-            fy = force_b_local.y + dfy
-            fz = force_b_local.z + dfz
-            force_b_local = Vec(fx, fy, fz)
-        end
-
-        # Store local contribution for body b
-        local_forces[b] = force_b_local
-    end
-
-    # Convert to flat arrays for MPI operations
-    local_force_array = zeros(Float64, 3 * nbodies)
-    
-    for i in 1:nbodies
-        local_force_array[3*(i-1) + 1] = local_forces[i].x
-        local_force_array[3*(i-1) + 2] = local_forces[i].y
-        local_force_array[3*(i-1) + 3] = local_forces[i].z
+        vel_b = bodies.vel[b]
+        sendbuf[3*(idx-1) + 1] = pos_b.x + dt * vel_b.x
+        sendbuf[3*(idx-1) + 2] = pos_b.y + dt * vel_b.y
+        sendbuf[3*(idx-1) + 3] = pos_b.z + dt * vel_b.z
+        idx += 1
     end
     
-    # Gather all partial force arrays at rank 0
-    if rank == 0
-        gathered_forces = zeros(Float64, 3 * nbodies * nranks)
-        MPI.Gather!(local_force_array, gathered_forces, 0, comm)
-    else
-        gathered_forces = nothing
-        MPI.Gather!(local_force_array, nothing, 0, comm)
+    # All ranks compute the same counts (cyclic distribution)
+    # Each rank sends local_count * 3 floats
+    recvbuf = zeros(Float64, nbodies * 3)
+    
+    # Use Allgather - all ranks send same size, so we can use regular Allgather
+    # But counts may vary slightly, so we need Allgatherv with known counts
+    sendcounts = Vector{Int32}(undef, nranks)
+    for r in 0:nranks-1
+        sendcounts[r+1] = Int32(((nbodies - r + nranks - 1) ÷ nranks) * 3)
+    end
+    recvcounts = sendcounts
+    displs = Vector{Int32}(undef, nranks)
+    displs[1] = Int32(0)
+    for i in 2:nranks
+        displs[i] = displs[i-1] + recvcounts[i-1]
     end
     
-    # Rank 0 sums all gathered partial forces
-    global_force_array = zeros(Float64, 3 * nbodies)
-    if rank == 0
-        for r in 0:nranks-1
-            offset = r * 3 * nbodies
-            for i in 1:nbodies
-                global_force_array[3*(i-1) + 1] += gathered_forces[offset + 3*(i-1) + 1]
-                global_force_array[3*(i-1) + 2] += gathered_forces[offset + 3*(i-1) + 2]
-                global_force_array[3*(i-1) + 3] += gathered_forces[offset + 3*(i-1) + 3]
-            end
+    MPI.Allgatherv!(sendbuf, MPI.VBuffer(recvbuf, recvcounts, displs), comm)
+    
+    # Unpack directly using cyclic distribution pattern (no need to gather indices)
+    @inbounds for r in 0:nranks-1
+        offset = displs[r+1]
+        local_count_r = sendcounts[r+1] ÷ 3
+        idx = 1
+        for b in (r + 1):nranks:nbodies
+            bodies.pos[b] = Vec(recvbuf[offset + 3*(idx-1) + 1],
+                               recvbuf[offset + 3*(idx-1) + 2],
+                               recvbuf[offset + 3*(idx-1) + 3])
+            idx += 1
         end
     end
+end
+
+function compute_velocities_gather!(bodies, dt, comm, rank, nranks)
+    nbodies = length(bodies.vel)
     
-    # Broadcast final forces to all ranks
-    MPI.Bcast!(global_force_array, 0, comm)
+    # Each rank computes velocities for its subset (cyclic distribution)
+    local_count = (nbodies - rank + nranks - 1) ÷ nranks  # Number of bodies this rank handles
+    sendbuf = zeros(Float64, local_count * 3)
     
-    # Copy results back to bodies structure
-    for i in 1:nbodies
-        fx = global_force_array[3*(i-1) + 1]
-        fy = global_force_array[3*(i-1) + 2]
-        fz = global_force_array[3*(i-1) + 3]
-        bodies.force[i] = Vec(fx, fy, fz)
+    # Compute and pack local velocities
+    idx = 1
+    @inbounds for b in (rank + 1):nranks:nbodies
+        mass_b = bodies.mass[b]
+        force_b = bodies.force[b]
+        vel_b = bodies.vel[b]
+        dt_div_mass_b = (dt / mass_b)
+        sendbuf[3*(idx-1) + 1] = vel_b.x + dt_div_mass_b * force_b.x
+        sendbuf[3*(idx-1) + 2] = vel_b.y + dt_div_mass_b * force_b.y
+        sendbuf[3*(idx-1) + 3] = vel_b.z + dt_div_mass_b * force_b.z
+        idx += 1
+    end
+    
+    # All ranks compute the same counts (cyclic distribution)
+    # Each rank sends local_count * 3 floats
+    recvbuf = zeros(Float64, nbodies * 3)
+    
+    # Use Allgather - all ranks send same size, so we can use regular Allgather
+    # But counts may vary slightly, so we need Allgatherv with known counts
+    sendcounts = Vector{Int32}(undef, nranks)
+    for r in 0:nranks-1
+        sendcounts[r+1] = Int32(((nbodies - r + nranks - 1) ÷ nranks) * 3)
+    end
+    recvcounts = sendcounts
+    displs = Vector{Int32}(undef, nranks)
+    displs[1] = Int32(0)
+    for i in 2:nranks
+        displs[i] = displs[i-1] + recvcounts[i-1]
+    end
+    
+    MPI.Allgatherv!(sendbuf, MPI.VBuffer(recvbuf, recvcounts, displs), comm)
+    
+    # Unpack directly using cyclic distribution pattern (no need to gather indices)
+    @inbounds for r in 0:nranks-1
+        offset = displs[r+1]
+        local_count_r = sendcounts[r+1] ÷ 3
+        idx = 1
+        for b in (r + 1):nranks:nbodies
+            bodies.vel[b] = Vec(recvbuf[offset + 3*(idx-1) + 1],
+                               recvbuf[offset + 3*(idx-1) + 2],
+                               recvbuf[offset + 3*(idx-1) + 3])
+            idx += 1
+        end
     end
 end
 
@@ -466,14 +476,17 @@ function perf_nbodies(nbodies, iterations, comm, verbose=false, silent=false, ba
             
             if balance
                 compute_forces_mpi_balanced!(bodies, comm, rank, nranks)
-            elseif gather
-                compute_forces_mpi_gather!(bodies, comm, rank, nranks)
             else
                 compute_forces_mpi!(bodies, comm, rank, nranks)
             end
     
-            compute_positions!(bodies, dt)
-            compute_velocities!(bodies, dt)
+            if gather
+                compute_positions_gather!(bodies, dt, comm, rank, nranks)
+                compute_velocities_gather!(bodies, dt, comm, rank, nranks)
+            else
+                compute_positions!(bodies, dt)
+                compute_velocities!(bodies, dt)
+            end
         end
         
         # Synchronize after computation
